@@ -16,6 +16,20 @@ sextad;	//Output of shift left 2 unit
 
 // benim eklediklerim -enes
 wire [31:0] alu_in_a, shamt_ext,lwsgt_addr,mem_addr,reg_write_data,swinc_data,swinc_plus1; 
+wire nout, vout;
+wire status_z, status_n, status_v;
+wire pc_s0, pc_s1;
+reg status_z_reg, status_n_reg, status_v_reg;
+assign status_z = status_z_reg;
+assign status_n = status_n_reg;
+assign status_v = status_v_reg;
+
+wire clean_flags;
+wire balclean_taken;
+wire [31:0] jump_target;
+wire [31:0] pc_next;
+
+
 
 wire [5:0] inst31_26;	//31-26 bits of instruction
 wire [4:0] 
@@ -30,17 +44,25 @@ wire [31:0] instruc,	//current instruction
 dpack;	//Read data output of memory (data read from memory)
 
 wire [2:0] gout;	//Output of ALU control unit
+wire [4:0] old_out1;    //Output of first mux for write register selection, used as input for second mux which selects between old_out1 and $ra (5'b11111) based on balclean signal
 
 wire zout,	//Zero output of ALU
-pcsrc,	//Output of AND gate with Branch and ZeroOut inputs
+pcsrc;	//Output of AND gate with Branch and ZeroOut inputs
 //Control signals
-regdest,alusrc,memtoreg,regwrite,memread,memwrite,branch,aluop1,aluop0,lwsgt, swinc;
+wire regdst0,regdst1,alusrc,memtoreg0,memtoreg1,regwrite,memread,memwrite,branch,aluop1,aluop0,lwsgt,swinc,balclean;
 
 //32-size register file (32 bit(1 word) for each register)
 reg [31:0] registerfile[0:31];
 
 integer i;
 
+assign jump_target =
+    {adder1out[31:28], instruc[25:0], 2'b00}; //jump instruction (addr>>2 + PC+4)
+
+assign clean_flags = (~status_z) & (~status_n) & (~status_v); //clean and gate
+assign balclean_taken = balclean & clean_flags; // balclean signal ve clean and gate
+assign pc_s0 = pcsrc | balclean_taken; // inputs of branch mux
+assign pc_s1 = balclean_taken;
 // datamemory connections
 
 always @(posedge clk)
@@ -71,21 +93,48 @@ assign datab=registerfile[inst20_16];//Read register 2
 always @(posedge clk)
  registerfile[out1] = regwrite ? reg_write_data : registerfile[out1];//Write data to register
 
+always @(posedge clk) // status register update
+begin
+    status_z_reg = zout;
+    status_n_reg = nout;
+    status_v_reg = vout;
+end
+
 //read data from memory, sum stores address
 assign dpack={datmem[mem_addr[5:0]],datmem[mem_addr[5:0]+1],datmem[mem_addr[5:0]+2],datmem[mem_addr[5:0]+3]};
 
 //multiplexers
 //mux with RegDst control
-mult2_to_1_5  mult1(out1, instruc[20:16],instruc[15:11],regdest);
-
+mult2_to_1_5 mult1(old_out1, instruc[20:16], instruc[15:11], regdst0);
+mult2_to_1_5 balclean_reg_mux(
+    out1,
+    old_out1,
+    5'b11111,
+    balclean
+);
 //mux with ALUSrc control
 mult2_to_1_32 mult2(out2, datab,extad,alusrc);
 
 //mux with MemToReg control
-mult2_to_1_32 mult3(out3, sum,dpack,memtoreg);
+mult4_to_1_32 mult3(
+    out3,
+    sum,        // 00 ALU result
+    dpack,      // 01 Memory
+    adder1out,  // 10 PC+4
+    32'b0,      // 11 unused
+    memtoreg0,
+    memtoreg1
+);
 
-//mux with (Branch&ALUZero) control
-mult2_to_1_32 mult4(out4, adder1out,adder2out,pcsrc);
+mult4_to_1_32 pc_mux(   // branch, jump mux
+    out4,
+    adder1out,      // 00 PC+4
+    adder2out,      // 01 branch
+    32'b0,          // 10 unused
+    jump_target,    // 11 jump
+    pc_s0,
+    pc_s1
+);
 
 mult2_to_1_32 mux_lwsgt_a(alu_in_a,
     dataa,   // lwsgt = 0
@@ -105,13 +154,13 @@ mult2_to_1_32 lwsgt_wb_mux(
 mult2_to_1_32 swinc_mux(swinc_data,datab,swinc_plus1,swinc); //swinc için yazılacak veriyi hesaplama
 
 // load pc
-always @(negedge clk)
-pc=out4;
+always @(posedge clk)
+pc<=out4;
 
 // alu, adder and control logic connections
 
 //ALU unit
-alu32 alu1(sum, alu_in_a, out2, zout, gout); //lwsgt icin degistirdim
+alu32 alu1(sum, alu_in_a, out2, zout, nout, vout, gout); // statuslu Alu
 
 //adder which adds PC and 4
 adder add1(pc,32'h4,adder1out);
@@ -125,8 +174,8 @@ adder lwsgt_add(dataa, shamt_ext, lwsgt_addr);
 adder swinc_adder(datab, 32'h1, swinc_plus1);
 
 //Control unit
-control cont(instruc[31:26],instruc[5:0],regdest,alusrc,memtoreg,regwrite,memread,memwrite,branch,
-aluop1,aluop0,lwsgt, swinc);
+control cont(instruc[31:26],instruc[5:0],regdst0,regdst1,alusrc,memtoreg0,memtoreg1,regwrite,memread,memwrite,branch,
+aluop1,aluop0,lwsgt, swinc, balclean);
 
 //Sign extend unit
 signext sext(instruc[15:0],extad);
@@ -170,9 +219,9 @@ initial
 begin
 
 $monitor($time,
-" PC %h INST %h SUM %h REG4 %h REG6 %h DM28 %h %h %h %h",
-pc, instruc, sum, registerfile[4], registerfile[6],
-datmem[28], datmem[29], datmem[30], datmem[31]);
+" PC %h INST %h RA %h REG4 %h REG6 %h REG7 %h DM28 %h %h %h %h",
+pc, instruc, registerfile[31], registerfile[4], registerfile[6],
+registerfile[7], datmem[28], datmem[29], datmem[30], datmem[31]);
 end
 endmodule
 
