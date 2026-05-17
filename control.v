@@ -1,18 +1,18 @@
 module control(
     in, funct,
-    regdest, alusrc, memtoreg,
+    regdst0, regdst1, alusrc, memtoreg0, memtoreg1,
     regwrite, memread, memwrite,
     branch, aluop1, aluop2,
-    lwsgt, swinc
+    lwsgt, swinc, balclean
 );
 
 input [5:0] in;
 input [5:0] funct;
 
-output regdest, alusrc, memtoreg;
+output regdst0, regdst1, alusrc, memtoreg0, memtoreg1;
 output regwrite, memread, memwrite;
 output branch, aluop1, aluop2;
-output lwsgt, swinc;
+output lwsgt, swinc, balclean;
 
 wire rformat, lw, sw, beq;
 
@@ -24,11 +24,14 @@ assign beq = ~in[5] & ~in[4] & ~in[3] &  in[2] & ~in[1] & ~in[0];
 
 assign lwsgt = rformat & (funct == 6'd21);
 assign swinc = (in == 6'd44);
+assign balclean =  ~in[5] & in[4] & ~in[3] & ~in[2] & in[1] & in[0];
 
-assign regdest  = rformat;
+assign regdst0 = rformat;
+assign regdst1 = balclean;
 assign alusrc   = lw | sw | swinc;
-assign memtoreg = lw ;
-assign regwrite = rformat | lw;
+assign memtoreg0 = lw;
+assign memtoreg1 = balclean;
+assign regwrite = rformat | lw | balclean;
 assign memread  = lw | lwsgt;
 assign memwrite = sw | swinc;
 assign branch   = beq;
