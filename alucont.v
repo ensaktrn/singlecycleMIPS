@@ -14,7 +14,7 @@ always @(*) begin
     else if (aluop1) begin  // R-type
         if (funct == 6'd21)
             gout = 3'b111;  // lwsgt -> SLT
-
+        
         else if (funct == 6'd32)
             gout = 3'b010;  // add
 
@@ -27,6 +27,9 @@ always @(*) begin
         else if (funct == 6'd37)
             gout = 3'b001;  // or
 
+        else if (funct == 6'd46)
+            gout = 3'b001;  // swor -> OR
+            
         else if (funct == 6'd42)
             gout = 3'b111;  // slt
 

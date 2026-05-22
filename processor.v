@@ -58,8 +58,9 @@ wire [4:0] old_out1;    //Output of first mux for write register selection, used
 wire zout,	//Zero output of ALU
 pcsrc;	//Output of AND gate with Branch and ZeroOut inputs
 //Control signals
-wire regdst0,regdst1,alusrc,memtoreg0,memtoreg1,regwrite,memread,memwrite,branch,aluop1,aluop0,lwsgt,swinc,balclean, bnem, swn;
-
+wire regdst0,regdst1,alusrc,memtoreg0,memtoreg1,regwrite,memread,memwrite,branch,aluop1,aluop0,lwsgt,swinc,balclean, bnem, swn, swor, bnpos;
+wire memaddr_s0; // control signals for memaddr mux
+assign memaddr_s0 = lwsgt | bnem; 
 //32-size register file (32 bit(1 word) for each register)
 reg [31:0] registerfile[0:31];
 
@@ -70,8 +71,10 @@ assign jump_target =
 
 assign clean_flags = (~status_z) & (~status_n) & (~status_v); //clean and gate
 assign balclean_taken = balclean & clean_flags; // balclean signal ve clean and gate
-assign pc_s0 = pcsrc | balclean_taken; // inputs of branch mux
-assign pc_s1 = balclean_taken| bnem_taken; // inputs of branch mux
+assign bnpos_taken = bnpos & (status_z | status_n);
+
+assign pc_s0 = pcsrc | balclean_taken | bnpos_taken; // inputs of branch mux
+assign pc_s1 = balclean_taken| bnem_taken | bnpos_taken; // inputs of branch mux
 
 // memwrite ile swn sinyali birlestiildi
 assign swn_write = swn & status_n;
@@ -161,7 +164,7 @@ mult4_to_1_32 memaddr_mux(      // lwsgt ve swn icin adres secimi
     lwsgt_addr,  // 01 rs + shamt
     dataa,       // 10 ReadData1 = rs
     32'b0,       // 11 unused
-    lwsgt,       // s0
+    memaddr_s0,       // s0
     swn          // s1
 ); 
 
@@ -172,7 +175,15 @@ mult2_to_1_32 lwsgt_wb_mux(
     lwsgt
 );
 
-mult2_to_1_32 swinc_mux(swinc_data,datab,swinc_plus1,swinc); //swinc için yazılacak veriyi hesaplama
+mult4_to_1_32 sw_data_mux( // write memorye gidecek mux swinc ve swor icin
+    swinc_data,
+    datab,        // 00 normal sw / swn
+    swinc_plus1,  // 01 swinc
+    datac,        // 10 swor
+    32'b0,        // 11 unused
+    swinc,        // s0
+    swor          // s1
+); 
 
 // load pc
 always @(posedge clk)
@@ -207,7 +218,7 @@ adder swinc_adder(datab, 32'h1, swinc_plus1);
 
 //Control unit
 control cont(instruc[31:26],instruc[5:0],regdst0,regdst1,alusrc,memtoreg0,memtoreg1,regwrite,memread,memwrite,branch,
-aluop1,aluop0,lwsgt, swinc, balclean, bnem, swn);
+aluop1,aluop0,lwsgt, swinc, balclean, bnem, swn, swor, bnpos);
 
 //Sign extend unit
 signext sext(instruc[15:0],extad);
@@ -250,11 +261,8 @@ end
 initial 
 begin
 $monitor($time,
-" PC %h INST %h N %b REG6 %h REG7 %h REG8 %h DM20 %h %h %h %h DM24 %h %h %h %h",
-pc, instruc, status_n,
-registerfile[6], registerfile[7], registerfile[8],
-datmem[20], datmem[21], datmem[22], datmem[23],
-datmem[24], datmem[25], datmem[26], datmem[27]);
+" PC %h INST %h diff %h lwsgt_gt %b bnem_taken %b REG6 %h",
+pc, instruc, bnem_diff, lwsgt_gt, bnem_taken, registerfile[6]);
 end
 endmodule
 
