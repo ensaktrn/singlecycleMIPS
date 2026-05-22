@@ -58,8 +58,9 @@ wire [4:0] old_out1;    //Output of first mux for write register selection, used
 wire zout,	//Zero output of ALU
 pcsrc;	//Output of AND gate with Branch and ZeroOut inputs
 //Control signals
-wire regdst0,regdst1,alusrc,memtoreg0,memtoreg1,regwrite,memread,memwrite,branch,aluop1,aluop0,lwsgt,swinc,balclean, bnem, swn;
-
+wire regdst0,regdst1,alusrc,memtoreg0,memtoreg1,regwrite,memread,memwrite,branch,aluop1,aluop0,lwsgt,swinc,balclean, bnem, swn, swor, bnpos;
+wire memaddr_s0; // control signals for memaddr mux
+assign memaddr_s0 = lwsgt | bnem; 
 //32-size register file (32 bit(1 word) for each register)
 reg [31:0] registerfile[0:31];
 
@@ -70,8 +71,10 @@ assign jump_target =
 
 assign clean_flags = (~status_z) & (~status_n) & (~status_v); //clean and gate
 assign balclean_taken = balclean & clean_flags; // balclean signal ve clean and gate
-assign pc_s0 = pcsrc | balclean_taken; // inputs of branch mux
-assign pc_s1 = balclean_taken| bnem_taken; // inputs of branch mux
+assign bnpos_taken = bnpos & (status_z | status_n);
+
+assign pc_s0 = pcsrc | balclean_taken | bnpos_taken; // inputs of branch mux
+assign pc_s1 = balclean_taken| bnem_taken | bnpos_taken; // inputs of branch mux
 
 // memwrite ile swn sinyali birlestiildi
 assign swn_write = swn & status_n;
@@ -124,18 +127,20 @@ assign dpack={datmem[mem_addr[5:0]],datmem[mem_addr[5:0]+1],datmem[mem_addr[5:0]
 
 //multiplexers
 //mux with RegDst control
-mult2_to_1_5 mult1(old_out1, instruc[20:16], instruc[15:11], regdst0);
-mult2_to_1_5 balclean_reg_mux(
+mult4_to_1_5 regdst_mux(        //M1
     out1,
-    old_out1,
-    5'b11111,
+    instruc[20:16], // 00 rt
+    instruc[15:11], // 01 rd
+    5'b11111,       // 10 $31 for balclean
+    5'b00000,       // 11 unused
+    regdst0,
     balclean
 );
 //mux with ALUSrc control
-mult2_to_1_32 mult2(out2, datab,extad,alusrc);
+mult2_to_1_32 mult2(out2, datab,extad,alusrc);  //M2
 
 //mux with MemToReg control
-mult4_to_1_32 mult3(
+mult4_to_1_32 mult3(        //M3
     out3,
     sum,        // 00 ALU result
     dpack,      // 01 Memory
@@ -145,7 +150,37 @@ mult4_to_1_32 mult3(
     memtoreg1
 );
 
-mult4_to_1_32 pc_mux(   // branch, jump mux
+// lwsgt ve swn icin adres secimi
+mult4_to_1_32 memaddr_mux(      //M4 
+    mem_addr,
+    sum,         // 00 ALU result
+    lwsgt_addr,  // 01 rs + shamt
+    dataa,       // 10 ReadData1 = rs
+    32'b0,       // 11 unused
+    memaddr_s0,       // s0
+    swn          // s1
+); 
+
+// write memorye gidecek mux swinc ve swor icin
+mult4_to_1_32 sw_data_mux(      //M5
+    swinc_data,
+    datab,        // 00 normal sw / swn
+    swinc_plus1,  // 01 swinc
+    datac,        // 10 swor
+    32'b0,        // 11 unused
+    swinc,        // s0
+    swor          // s1
+); 
+
+mult2_to_1_32 lwsgt_wb_mux(     //M6
+    reg_write_data,
+    out3,   // lwsgt = 0 → eski write data
+    lwsgt_write_data,    
+    lwsgt
+);
+
+// branch, jump mux
+mult4_to_1_32 pc_mux(    //M7
     out4,
     adder1out,      // 00 PC+4
     adder2out,      // 01 branch
@@ -155,24 +190,6 @@ mult4_to_1_32 pc_mux(   // branch, jump mux
     pc_s1
 );
 
-mult4_to_1_32 memaddr_mux(      // lwsgt ve swn icin adres secimi
-    mem_addr,
-    sum,         // 00 ALU result
-    lwsgt_addr,  // 01 rs + shamt
-    dataa,       // 10 ReadData1 = rs
-    32'b0,       // 11 unused
-    lwsgt,       // s0
-    swn          // s1
-); 
-
-mult2_to_1_32 lwsgt_wb_mux(
-    reg_write_data,
-    out3,   // lwsgt = 0 → eski write data
-    lwsgt_write_data,    
-    lwsgt
-);
-
-mult2_to_1_32 swinc_mux(swinc_data,datab,swinc_plus1,swinc); //swinc için yazılacak veriyi hesaplama
 
 // load pc
 always @(posedge clk)
@@ -181,19 +198,19 @@ pc<=out4;
 // alu, adder and control logic connections
 
 //ALU unit
-alu32 alu1(sum, dataa, out2, zout, nout, vout, gout); //statuslu alu
+alu32 alu1(sum, dataa, out2, zout, nout, vout, gout); // ALU with status
 
 //adder which adds PC and 4
-adder add1(pc,32'h4,adder1out);
+adder add1(pc,32'h4,adder1out);     //Add1
 
 //adder which adds PC+4 and 2 shifted sign-extend result
-adder add2(adder1out,sextad,adder2out);
+adder add2(adder1out,sextad,adder2out);  //Add2
 
 //bnem
 assign not_dpack = ~dpack;
 
-adder bnem_add1(datab, not_dpack, bnem_temp);
-adder bnem_add2(bnem_temp, 32'h1, bnem_diff);
+adder bnem_add1(datab, not_dpack, bnem_temp);   //Add3
+adder bnem_add2(bnem_temp, 32'h1, bnem_diff);   //Add4
 
 assign bnem_not_equal = |bnem_diff;
 assign bnem_taken = bnem & bnem_not_equal;
@@ -202,12 +219,12 @@ assign lwsgt_write_data = {31'b0, lwsgt_gt};
 
 signext5_to_32 sext5(instruc[10:6], shamt_ext);
 
-adder lwsgt_add(dataa, shamt_ext, lwsgt_addr);
-adder swinc_adder(datab, 32'h1, swinc_plus1);
+adder lwsgt_add(dataa, shamt_ext, lwsgt_addr);  //Add5
+adder swinc_adder(datab, 32'h1, swinc_plus1);   //Add6
 
 //Control unit
 control cont(instruc[31:26],instruc[5:0],regdst0,regdst1,alusrc,memtoreg0,memtoreg1,regwrite,memread,memwrite,branch,
-aluop1,aluop0,lwsgt, swinc, balclean, bnem, swn);
+aluop1,aluop0,lwsgt, swinc, balclean, bnem, swn, swor, bnpos);
 
 //Sign extend unit
 signext sext(instruc[15:0],extad);
@@ -250,11 +267,8 @@ end
 initial 
 begin
 $monitor($time,
-" PC %h INST %h N %b REG6 %h REG7 %h REG8 %h DM20 %h %h %h %h DM24 %h %h %h %h",
-pc, instruc, status_n,
-registerfile[6], registerfile[7], registerfile[8],
-datmem[20], datmem[21], datmem[22], datmem[23],
-datmem[24], datmem[25], datmem[26], datmem[27]);
+" PC %h INST %h balclean %b out1 %d RA %h REG6 %h",
+pc, instruc, balclean, out1, registerfile[31], registerfile[6]);
 end
 endmodule
 
